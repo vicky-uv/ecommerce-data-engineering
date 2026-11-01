@@ -1,7 +1,13 @@
+
 from pathlib import Path
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, sum as spark_sum, round
+from pyspark.sql.functions import (
+    col,
+    count,
+    round,
+    sum as spark_sum,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -25,6 +31,7 @@ try:
         str(CURATED_PATH / "payments")
     )
 
+    # Calculate the total amount of items for each order
     item_totals = (
         order_items
         .groupBy("order_id")
@@ -34,6 +41,37 @@ try:
         )
     )
 
+    # Check for duplicate payment records
+    duplicate_payments = (
+        payments.groupBy("order_id")
+        .agg(count("*").alias("payment_count"))
+        .filter(col("payment_count") > 1)
+        .count()
+    )
+
+    # Find orders without matching payment records
+    missing_payments = (
+        item_totals.select("order_id")
+        .join(
+            payments.select("order_id"),
+            on="order_id",
+            how="left_anti"
+        )
+        .count()
+    )
+
+    # Find payments without matching order items
+    missing_order_items = (
+        payments.select("order_id")
+        .join(
+            item_totals.select("order_id"),
+            on="order_id",
+            how="left_anti"
+        )
+        .count()
+    )
+
+    # Compare calculated order totals with payment amounts
     comparison = (
         item_totals
         .join(payments, on="order_id", how="inner")
@@ -47,19 +85,41 @@ try:
     )
 
     mismatches = comparison.filter(
-        col("difference") != 0
+        col("difference").isNull()
+        | (col("difference") != 0)
     )
 
-    print("Total orders checked:", comparison.count())
-    print("Mismatched payment amounts:", mismatches.count())
+    total_orders_checked = comparison.count()
+    mismatch_count = mismatches.count()
 
-    print("\nSample mismatches:")
-    mismatches.select(
-        "order_id",
-        "calculated_order_total",
-        "payment_amount",
-        "difference"
-    ).show(10, truncate=False)
+    print("\n========== ORDER PAYMENT VALIDATION ==========")
+    print(f"Orders checked: {total_orders_checked}")
+    print(f"Mismatched payment amounts: {mismatch_count}")
+    print(f"Duplicate payment records: {duplicate_payments}")
+    print(f"Orders without payments: {missing_payments}")
+    print(f"Payments without order items: {missing_order_items}")
+
+    if mismatch_count > 0:
+        print("\nSample mismatches:")
+        mismatches.select(
+            "order_id",
+            "calculated_order_total",
+            "payment_amount",
+            "difference"
+        ).show(10, truncate=False)
+
+    all_passed = (
+        total_orders_checked > 0
+        and mismatch_count == 0
+        and duplicate_payments == 0
+        and missing_payments == 0
+        and missing_order_items == 0
+    )
+
+    if not all_passed:
+        raise RuntimeError("Order payment validation failed!")
+
+    print("\nORDER PAYMENT VALIDATION PASSED!")
 
 finally:
     spark.stop()

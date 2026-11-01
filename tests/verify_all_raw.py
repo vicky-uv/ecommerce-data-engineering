@@ -1,5 +1,7 @@
+
 from pathlib import Path
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import max as spark_max, col
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
@@ -26,19 +28,35 @@ try:
     print("\n========== RAW DATA VALIDATION ==========")
 
     for dataset, expected_count in EXPECTED_COUNTS.items():
-
         path = BASE_DIR / "data" / "raw" / dataset
 
         try:
             df = spark.read.parquet(str(path))
-            actual_count = df.count()
 
-            status = "PASSED" if actual_count == expected_count else "FAILED"
+            # Identify the most recent ingestion batch
+            latest_batch = (
+                df.select(spark_max("batch_id").alias("latest_batch"))
+                .first()["latest_batch"]
+            )
+
+            if latest_batch is None:
+                raise ValueError("No ingestion batch found")
+
+            # Validate records belonging to that batch only
+            latest_df = df.filter(col("batch_id") == latest_batch)
+            actual_count = latest_df.count()
+
+            status = (
+                "PASSED"
+                if actual_count == expected_count
+                else "FAILED"
+            )
 
             print(
                 f"{dataset:15} | "
                 f"Expected: {expected_count:7} | "
-                f"Actual: {actual_count:7} | {status}"
+                f"Actual: {actual_count:7} | "
+                f"Batch: {latest_batch} | {status}"
             )
 
             if actual_count != expected_count:
@@ -49,7 +67,11 @@ try:
             all_passed = False
 
     print("\n=========================================")
-    print("ALL DATASETS VALIDATED!" if all_passed else "SOME VALIDATIONS FAILED!")
+
+    if all_passed:
+        print("ALL DATASETS VALIDATED!")
+    else:
+        raise RuntimeError("Raw dataset validation failed!")
 
 finally:
     spark.stop()

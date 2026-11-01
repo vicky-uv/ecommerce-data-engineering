@@ -1,7 +1,8 @@
+
 from pathlib import Path
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count
+from pyspark.sql.functions import col
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -23,9 +24,11 @@ try:
     order_items = spark.read.parquet(str(ORDER_ITEMS_PATH))
     fact = spark.read.parquet(str(FACT_PATH))
 
+    # Record count validation
     source_count = order_items.count()
     fact_count = fact.count()
 
+    # Duplicate ID validation
     duplicate_count = (
         fact.groupBy("order_item_id")
         .count()
@@ -33,6 +36,12 @@ try:
         .count()
     )
 
+    # Null ID validation
+    null_id_count = fact.filter(
+        col("order_item_id").isNull()
+    ).count()
+
+    # Mandatory field validation
     missing_details = fact.filter(
         col("customer_id").isNull()
         | col("customer_name").isNull()
@@ -41,6 +50,7 @@ try:
         | col("order_date").isNull()
     ).count()
 
+    # Check whether any source records are missing in the fact table
     missing_source_records = (
         order_items.select("order_item_id")
         .join(
@@ -55,18 +65,22 @@ try:
     print(f"Source order items: {source_count}")
     print(f"Fact records: {fact_count}")
     print(f"Duplicate order item IDs: {duplicate_count}")
+    print(f"Null order item IDs: {null_id_count}")
     print(f"Missing customer/product details: {missing_details}")
     print(f"Missing source records: {missing_source_records}")
 
-    if (
+    all_passed = (
         source_count == fact_count
         and duplicate_count == 0
+        and null_id_count == 0
         and missing_details == 0
         and missing_source_records == 0
-    ):
-        print("\nFACT TABLE VALIDATION PASSED!")
-    else:
-        raise Exception("Fact table validation failed!")
+    )
+
+    if not all_passed:
+        raise RuntimeError("Fact order items validation failed!")
+
+    print("\nFACT TABLE VALIDATION PASSED!")
 
 finally:
     spark.stop()
