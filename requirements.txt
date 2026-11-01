@@ -4,3 +4,4 @@ python-dotenv
 pyyaml
 pytest
 pyspark==4.0.1
+duckdb
